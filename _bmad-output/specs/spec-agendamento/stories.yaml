@@ -1,233 +1,262 @@
 - id: "1"
-  title: Schema, slot and appointment state machines, Clock port
+  title: Schema, máquinas de estado de slot e consulta, porta Clock
   description: >-
-    Forward-only migrations for doctors, slots, appointments, soft_locks,
+    Migrations forward-only para doctors, slots, appointments, soft_locks,
     waitlist_entry, waitlist_vip_counter, offers, idempotency_keys, slot_events,
-    audit_records, cancellation_penalty; the partial unique indexes
-    slot_id WHERE appointment.status='confirmada' and offers(slot_id) WHERE
-    status='pendente'; the Slot.transition and Appointment.transition domain
-    methods with their CAS SQL; an injectable Clock port. Covers SPEC.md
-    Constraints and AD-1/AD-7/AD-10; underpins every capability.
+    audit_records, cancellation_penalty; os índices únicos parciais
+    slot_id WHERE appointment.status='confirmada' e offers(slot_id) WHERE
+    status='pendente'; os métodos de domínio Slot.transition e
+    Appointment.transition com seu SQL de CAS; uma porta Clock injetável. Cobre
+    as Restrições do SPEC.md e AD-1/AD-7/AD-10; sustenta toda capacidade.
   invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
-    the prd.md FR consequences before coding.
+    Escreva os testes primeiro. Toda mutação de estado é CAS com verificação de
+    linhas afetadas — sem SELECT ... FOR UPDATE, sem advisory lock bloqueante.
+    Caminhos críticos de concorrência precisam de um teste de contenção
+    deliberada (testcontainers-go). Stack: Go 1.26, Echo v5, PostgreSQL 18,
+    Redis 8. Leia ARCHITECTURE-SPINE.md AD-1..AD-11 e as consequências dos FR do
+    prd.md antes de codar.
 - id: "2"
-  title: Idempotency envelope and HTTP middleware
+  title: Envelope de idempotência e middleware HTTP
   description: >-
-    Implement CAP-10: require an Idempotency-Key (UUID) on every mutating route
-    (absent -> 400); insert the key row ON CONFLICT DO NOTHING in the same
-    transaction as the domain mutation; replay same key+fingerprint -> stored
-    response; same key + different body -> 422; concurrent same key -> one
-    executes, the other waits for the original response or gets 409 "em
-    processamento"; 24h fixed TTL with a sweep.
+    Implemente a CAP-10: exigir uma Idempotency-Key (UUID) em toda rota mutante
+    (ausente -> 400); inserir a linha da chave com ON CONFLICT DO NOTHING na
+    mesma transação que a mutação de domínio; repetição com mesma
+    chave+fingerprint -> resposta armazenada; mesma chave + corpo diferente ->
+    422; mesma chave concorrente -> uma executa, a outra aguarda a resposta
+    original ou recebe 409 "em processamento"; TTL fixo de 24h com uma
+    varredura.
   invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
-    the prd.md FR consequences before coding.
+    Escreva os testes primeiro. Toda mutação de estado é CAS com verificação de
+    linhas afetadas — sem SELECT ... FOR UPDATE, sem advisory lock bloqueante.
+    Caminhos críticos de concorrência precisam de um teste de contenção
+    deliberada (testcontainers-go). Stack: Go 1.26, Echo v5, PostgreSQL 18,
+    Redis 8. Leia ARCHITECTURE-SPINE.md AD-1..AD-11 e as consequências dos FR do
+    prd.md antes de codar.
 - id: "3"
-  title: Transactional outbox, relay, and Redis stream
+  title: Outbox transacional, relay e Redis stream
   description: >-
-    Implement CAP-11: every transition writes a past-tense event to slot_events
-    in the mutation's transaction; a relay binary reads the outbox and publishes
-    to a Redis stream; provide the idempotent, reprocess-safe internal consumer
-    scaffold that stories 9, 12, 13 and 14 plug into.
+    Implemente a CAP-11: toda transição escreve um evento no passado em
+    slot_events na transação da mutação; um binário de relay lê o outbox e
+    publica em um Redis stream; forneça o scaffold de consumidor interno
+    idempotente e seguro para reprocessamento no qual as histórias 9, 12, 13 e
+    14 se encaixam.
   invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
-    the prd.md FR consequences before coding.
+    Escreva os testes primeiro. Toda mutação de estado é CAS com verificação de
+    linhas afetadas — sem SELECT ... FOR UPDATE, sem advisory lock bloqueante.
+    Caminhos críticos de concorrência precisam de um teste de contenção
+    deliberada (testcontainers-go). Stack: Go 1.26, Echo v5, PostgreSQL 18,
+    Redis 8. Leia ARCHITECTURE-SPINE.md AD-1..AD-11 e as consequências dos FR do
+    prd.md antes de codar.
 - id: "4"
-  title: Immutable audit trail wired into every transition
+  title: Trilha de auditoria imutável ligada a toda transição
   description: >-
-    Implement CAP-23: an append-only audit_record (entity, entity_id,
+    Implemente a CAP-23: um audit_record somente-acréscimo (entity, entity_id,
     prev_state, new_state, actor in {patient_id|doctor_id|system}, cause, ts UTC)
-    written in the same transaction as every Slot, Appointment, SoftLock, Offer
-    and Penalty transition; never updated or deleted; entity history is
-    reconstructable; state-transition count equals audit-record count.
+    escrito na mesma transação que toda transição de Slot, Consulta, Soft Lock,
+    Oferta e Penalidade; nunca atualizado nem excluído; o histórico da entidade
+    é reconstruível; a contagem de transições de estado é igual à contagem de
+    registros de auditoria.
   invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
-    the prd.md FR consequences before coding.
+    Escreva os testes primeiro. Toda mutação de estado é CAS com verificação de
+    linhas afetadas — sem SELECT ... FOR UPDATE, sem advisory lock bloqueante.
+    Caminhos críticos de concorrência precisam de um teste de contenção
+    deliberada (testcontainers-go). Stack: Go 1.26, Echo v5, PostgreSQL 18,
+    Redis 8. Leia ARCHITECTURE-SPINE.md AD-1..AD-11 e as consequências dos FR do
+    prd.md antes de codar.
 - id: "5"
-  title: Schedule publication — register doctor, publish slots, block/unblock
+  title: Publicação de agenda — registrar médico, publicar slots, bloquear/desbloquear
   description: >-
-    Implement CAP-13, CAP-14, CAP-15: register a Doctor (name, specialty,
-    default Valor de Referencia; missing -> 422; idempotent); publish N slots in
-    one request (all livre, inheriting the Doctor's Valor de Referencia;
-    overlapping intervals -> 422 rejecting the whole batch; end <= start -> 422;
-    idempotent); block/unblock a livre slot (non-livre -> 409; a bloqueado slot
-    is absent from discovery and cannot receive a soft lock).
+    Implemente a CAP-13, CAP-14, CAP-15: registrar um Médico (nome,
+    especialidade, Valor de Referência padrão; ausente -> 422; idempotente);
+    publicar N slots em uma requisição (todos livre, herdando o Valor de
+    Referência do Médico; intervalos sobrepostos -> 422 rejeitando o lote
+    inteiro; fim <= início -> 422; idempotente); bloquear/desbloquear um slot
+    livre (não-livre -> 409; um slot bloqueado fica ausente da descoberta e não
+    pode receber um Soft Lock).
   invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
-    the prd.md FR consequences before coding.
+    Escreva os testes primeiro. Toda mutação de estado é CAS com verificação de
+    linhas afetadas — sem SELECT ... FOR UPDATE, sem advisory lock bloqueante.
+    Caminhos críticos de concorrência precisam de um teste de contenção
+    deliberada (testcontainers-go). Stack: Go 1.26, Echo v5, PostgreSQL 18,
+    Redis 8. Leia ARCHITECTURE-SPINE.md AD-1..AD-11 e as consequências dos FR do
+    prd.md antes de codar.
 - id: "6"
-  title: Discover agenda
+  title: Descobrir a agenda
   description: >-
-    Implement CAP-1: list a doctor's slots for a date range with each slot's
-    availability; only livre shows available; support only=available; return UTC
-    times with the clinic offset as presentation metadata; a slot whose soft
-    lock has expired shows available again with no patient action. Read-only,
-    no write transaction.
+    Implemente a CAP-1: listar os slots de um médico para um intervalo de datas
+    com a disponibilidade de cada slot; apenas livre aparece como disponível;
+    suportar only=available; retornar horários em UTC com o offset da clínica
+    como metadado de apresentação; um slot cujo Soft Lock expirou volta a
+    aparecer como disponível sem ação do Paciente. Somente leitura, sem
+    transação de escrita.
   invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
-    the prd.md FR consequences before coding.
+    Escreva os testes primeiro. Toda mutação de estado é CAS com verificação de
+    linhas afetadas — sem SELECT ... FOR UPDATE, sem advisory lock bloqueante.
+    Caminhos críticos de concorrência precisam de um teste de contenção
+    deliberada (testcontainers-go). Stack: Go 1.26, Echo v5, PostgreSQL 18,
+    Redis 8. Leia ARCHITECTURE-SPINE.md AD-1..AD-11 e as consequências dos FR do
+    prd.md antes de codar.
 - id: "7"
-  title: Soft-lock and confirm
+  title: Soft Lock e confirmação
   description: >-
-    Implement CAP-2 and CAP-3: free->held CAS (exactly one winner under K up to
-    50; non-livre -> 409; at most 1 active soft lock per patient per doctor+date
-    -> 409) with a Redis EX 900 marker; held->confirmed CAS guarded by held_by
-    and held_until, with the partial unique index as backstop; a different-key
-    repeat when the appointment already exists returns it, not an error.
-    Includes the deliberate double-booking contention test.
+    Implemente a CAP-2 e a CAP-3: CAS de livre->reservado (exatamente um
+    vencedor sob K até 50; não-livre -> 409; no máximo 1 Soft Lock ativo por
+    paciente por médico+data -> 409) com um marcador Redis EX 900; CAS de
+    reservado->confirmado protegido por held_by e held_until, com o índice único
+    parcial como rede de segurança; uma repetição com chave diferente quando a
+    consulta já existe a retorna, não um erro. Inclui o teste de contenção de
+    reserva dupla deliberada.
   invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
-    the prd.md FR consequences before coding.
+    Escreva os testes primeiro. Toda mutação de estado é CAS com verificação de
+    linhas afetadas — sem SELECT ... FOR UPDATE, sem advisory lock bloqueante.
+    Caminhos críticos de concorrência precisam de um teste de contenção
+    deliberada (testcontainers-go). Stack: Go 1.26, Echo v5, PostgreSQL 18,
+    Redis 8. Leia ARCHITECTURE-SPINE.md AD-1..AD-11 e as consequências dos FR do
+    prd.md antes de codar.
 - id: "8"
-  title: Soft-lock expiry — lazy and proactive
+  title: Expiração de Soft Lock — preguiçosa e proativa
   description: >-
-    Implement CAP-4: any write-path use case that reads status='reservado' AND
-    held_until < now() performs the reservado->livre CAS through the transition
-    method (outbox event + audit record in the same transaction) before
-    proceeding; the System worker does the same proactively off the Redis TTL;
-    a read-only path that cannot open a write transaction treats the slot as
-    free for display only; delay to effective release <= 30 s.
+    Implemente a CAP-4: qualquer caso de uso de caminho de escrita que leia
+    status='reservado' AND held_until < now() executa o CAS reservado->livre
+    através do método de transição (evento de outbox + registro de auditoria na
+    mesma transação) antes de prosseguir; o worker do Sistema faz o mesmo
+    proativamente a partir do TTL do Redis; um caminho somente leitura que não
+    consegue abrir uma transação de escrita trata o slot como livre apenas para
+    exibição; atraso até a liberação efetiva <= 30 s.
   invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
-    the prd.md FR consequences before coding.
+    Escreva os testes primeiro. Toda mutação de estado é CAS com verificação de
+    linhas afetadas — sem SELECT ... FOR UPDATE, sem advisory lock bloqueante.
+    Caminhos críticos de concorrência precisam de um teste de contenção
+    deliberada (testcontainers-go). Stack: Go 1.26, Echo v5, PostgreSQL 18,
+    Redis 8. Leia ARCHITECTURE-SPINE.md AD-1..AD-11 e as consequências dos FR do
+    prd.md antes de codar.
 - id: "9"
-  title: Cancel with penalty and slot reopen
+  title: Cancelamento com Penalidade e reabertura do slot
   description: >-
-    Implement CAP-5: confirmado->cancelado CAS once; when start - now() < 2h a
-    cancellation_penalty row with amount = 50% of the slot's Valor de Referencia
-    (fixed at slot creation) and its currency is written in the same
-    transaction; the slot then goes livre and emits slot.cancelled; >= 2h ahead
-    writes no penalty; cancelling a concluida/no_show appointment -> 409; at most
-    one penalty per appointment under concurrent/repeated cancels. No collection.
+    Implemente a CAP-5: CAS confirmado->cancelado uma vez; quando start - now()
+    < 2h, uma linha cancellation_penalty com amount = 50% do Valor de Referência
+    do slot (fixado na criação do slot) e sua moeda é escrita na mesma
+    transação; o slot então vai para livre e emite slot.cancelled; com >= 2h de
+    antecedência não escreve Penalidade; cancelar uma consulta concluida/no_show
+    -> 409; no máximo uma Penalidade por consulta sob cancelamentos
+    concorrentes/repetidos. Sem coleta.
   invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
-    the prd.md FR consequences before coding.
+    Escreva os testes primeiro. Toda mutação de estado é CAS com verificação de
+    linhas afetadas — sem SELECT ... FOR UPDATE, sem advisory lock bloqueante.
+    Caminhos críticos de concorrência precisam de um teste de contenção
+    deliberada (testcontainers-go). Stack: Go 1.26, Echo v5, PostgreSQL 18,
+    Redis 8. Leia ARCHITECTURE-SPINE.md AD-1..AD-11 e as consequências dos FR do
+    prd.md antes de codar.
 - id: "10"
-  title: Waitlist join (two scopes), authority/projection, reconciler, leave
+  title: Entrada na Fila de Espera (dois escopos), autoridade/projeção, reconciliador, saída
   description: >-
-    Implement CAP-6, CAP-12 and CAP-17: write waitlist_entry (Postgres
-    authority) with scope slot:<id> or doctor:<id>:<yyyy-mm-dd>, enqueued_at and
-    class, mirrored best-effort to the matching Redis sorted set; a patient
-    appears at most once per queue; joining a slot's waitlist where the patient
-    already has a confirmada appointment -> 409; leave is idempotent and marks a
-    pendente offer recusada then triggers advance; a reconciler reprojects both
-    sorted sets and the waitlist_vip_counter from Postgres on boot and
-    periodically, with a domain-function fallback on miss.
+    Implemente a CAP-6, a CAP-12 e a CAP-17: escrever waitlist_entry (autoridade
+    no Postgres) com scope slot:<id> ou doctor:<id>:<yyyy-mm-dd>, enqueued_at e
+    class, espelhado em melhor esforço para o Redis sorted set correspondente;
+    um paciente aparece no máximo uma vez por fila; entrar na Fila de Espera de
+    um slot onde o paciente já tem uma consulta confirmada -> 409; a saída é
+    idempotente e marca uma offer pendente como recusada e então dispara o
+    avanço; um reconciliador reprojeta ambos os sorted sets e o
+    waitlist_vip_counter a partir do Postgres na inicialização e periodicamente,
+    com fallback para a função de domínio em caso de falha de leitura.
   invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
-    the prd.md FR consequences before coding.
+    Escreva os testes primeiro. Toda mutação de estado é CAS com verificação de
+    linhas afetadas — sem SELECT ... FOR UPDATE, sem advisory lock bloqueante.
+    Caminhos críticos de concorrência precisam de um teste de contenção
+    deliberada (testcontainers-go). Stack: Go 1.26, Echo v5, PostgreSQL 18,
+    Redis 8. Leia ARCHITECTURE-SPINE.md AD-1..AD-11 e as consequências dos FR do
+    prd.md antes de codar.
 - id: "11"
-  title: Queue ordering with quota and ceiling anti-starvation
+  title: Ordenação de fila com anti-starvation por quota e teto
   description: >-
-    Implement CAP-8: a pure, deterministic domain function — class (VIP before
-    comum) then entry order; quota = a consecutive-VIP-grant counter per
-    doctor+date, ANTI_STARVATION_QUOTA default 3, resetting on any grant to a
-    comum; ceiling = ANTI_STARVATION_CEILING default 24h, a comum past it gets
-    top priority. Test that a comum past the ceiling outranks a freshly
-    enqueued VIP and that a comum is served within N+1 releases worst case.
+    Implemente a CAP-8: uma função de domínio pura e determinística — classe
+    (VIP antes de comum) e depois ordem de entrada; quota = um contador de
+    concessões-VIP-consecutivas por médico+data, ANTI_STARVATION_QUOTA padrão 3,
+    zerando em qualquer concessão a um comum; teto = ANTI_STARVATION_CEILING
+    padrão 24h, um comum que o ultrapassa recebe prioridade máxima. Teste que um
+    comum além do teto supera um VIP recém-enfileirado e que um comum é atendido
+    dentro de N+1 liberações no pior caso.
   invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
-    the prd.md FR consequences before coding.
+    Escreva os testes primeiro. Toda mutação de estado é CAS com verificação de
+    linhas afetadas — sem SELECT ... FOR UPDATE, sem advisory lock bloqueante.
+    Caminhos críticos de concorrência precisam de um teste de contenção
+    deliberada (testcontainers-go). Stack: Go 1.26, Echo v5, PostgreSQL 18,
+    Redis 8. Leia ARCHITECTURE-SPINE.md AD-1..AD-11 e as consequências dos FR do
+    prd.md antes de codar.
 - id: "12"
-  title: Waitlist advance, 30-minute offer, and accept
+  title: Avanço da Fila de Espera, Oferta de 30 minutos e aceite
   description: >-
-    Implement CAP-7 and CAP-16: on a slot becoming livre (cancel, expiry,
-    no-show) select the next entry by the story-11 ordering over the merged
-    slot-scope + doctor+date-scope candidates; set offer:<slot_id> EX 1800 and
-    insert an offers row via INSERT ON CONFLICT DO NOTHING on the pendente
-    partial unique index so at most one pending offer per slot exists and
-    concurrent release+advance converge; payload names the slot_id; 30-minute
-    clock from notification sent; on expiry/refusal advance or leave livre; a
-    served patient leaves all queues for that doctor+date; accepting a pendente
-    offer in-window -> confirmada appointment (idempotent; expired/refused/other
-    patient -> 409; same uniqueness invariant as story 7).
+    Implemente a CAP-7 e a CAP-16: quando um slot passa a livre (cancelamento,
+    expiração, no-show) selecionar a próxima entrada pela ordenação da história
+    11 sobre os candidatos mesclados de escopo-de-slot + escopo-de-médico+data;
+    definir offer:<slot_id> EX 1800 e inserir uma linha offers via INSERT ON
+    CONFLICT DO NOTHING no índice único parcial de pendente para que exista no
+    máximo uma Oferta pendente por slot e liberação+avanço concorrentes
+    convirjam; o payload nomeia o slot_id; relógio de 30 minutos a partir do
+    envio da notificação; na expiração/recusa avançar ou deixar livre; um
+    paciente atendido sai de todas as filas daquele médico+data; aceitar uma
+    offer pendente dentro da janela -> consulta confirmada (idempotente;
+    expirada/recusada/outro paciente -> 409; mesmo invariante de unicidade da
+    história 7).
   invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
-    the prd.md FR consequences before coding.
+    Escreva os testes primeiro. Toda mutação de estado é CAS com verificação de
+    linhas afetadas — sem SELECT ... FOR UPDATE, sem advisory lock bloqueante.
+    Caminhos críticos de concorrência precisam de um teste de contenção
+    deliberada (testcontainers-go). Stack: Go 1.26, Echo v5, PostgreSQL 18,
+    Redis 8. Leia ARCHITECTURE-SPINE.md AD-1..AD-11 e as consequências dos FR do
+    prd.md antes de codar.
 - id: "13"
-  title: D-1 reminder, presence confirmation, em_risco marking
+  title: Lembrete D-1, Confirmação de Presença, marcação de em_risco
   description: >-
-    Implement CAP-9, CAP-18, CAP-19 plus the NotificationGateway port with a
-    reference log adapter: the System sends one D-1 reminder per confirmada
-    appointment whose slot starts the next day (deterministic key
-    reminder:<appointment_id>:D-1; ~18:00 clinic timezone -> UTC; no resend; none
-    for cancelada/concluida/no_show); register presence confirmation
-    (idempotent; after slot start -> 409); at T-2h with no presence confirmation
-    the System sets the slot em_risco (appointment stays confirmada; presence or
-    Check-in returns it to confirmado; idempotent; no pre-oferta in MVP).
+    Implemente a CAP-9, a CAP-18, a CAP-19 mais a porta NotificationGateway com
+    um adaptador de log de referência: o Sistema envia um Lembrete D-1 por
+    consulta confirmada cujo slot começa no dia seguinte (chave determinística
+    reminder:<appointment_id>:D-1; ~18:00 no fuso da clínica -> UTC; sem
+    reenvio; nenhum para cancelada/concluida/no_show); registrar Confirmação de
+    Presença (idempotente; após o início do slot -> 409); em T-2h sem
+    Confirmação de Presença o Sistema define o slot como em_risco (a consulta
+    permanece confirmada; Confirmação de Presença ou Check-in a devolve a
+    confirmado; idempotente; sem pré-oferta no MVP).
   invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
-    the prd.md FR consequences before coding.
+    Escreva os testes primeiro. Toda mutação de estado é CAS com verificação de
+    linhas afetadas — sem SELECT ... FOR UPDATE, sem advisory lock bloqueante.
+    Caminhos críticos de concorrência precisam de um teste de contenção
+    deliberada (testcontainers-go). Stack: Go 1.26, Echo v5, PostgreSQL 18,
+    Redis 8. Leia ARCHITECTURE-SPINE.md AD-1..AD-11 e as consequências dos FR do
+    prd.md antes de codar.
 - id: "14"
-  title: No-show lifecycle — auto no-show, check-in, doctor override
+  title: Ciclo de vida do No-show — no-show automático, check-in, sobreposição do médico
   description: >-
-    Implement CAP-20, CAP-21, CAP-22: the System auto-marks no_show any
-    confirmada appointment whose slot started more than 15 min ago with no
-    Check-in (idempotent; a confirmed no-show frees the slot and triggers
-    story-12 advance; audit record with cause); register Check-in from 30 min
-    before to 15 min after slot start (blocks auto no-show; idempotent; outside
-    the window -> 409); the owning Doctor undoes a no-show -> confirmada (409
-    with the conflict stated if the slot was re-confirmed for a third party;
-    audit with doctor_id; idempotent).
+    Implemente a CAP-20, a CAP-21, a CAP-22: o Sistema marca automaticamente
+    como no_show qualquer consulta confirmada cujo slot começou há mais de 15
+    min sem Check-in (idempotente; um no-show confirmado libera o slot e dispara
+    o avanço da história 12; registro de auditoria com causa); registrar
+    Check-in de 30 min antes até 15 min depois do início do slot (bloqueia o
+    no-show automático; idempotente; fora da janela -> 409); o Médico dono
+    desfaz um no-show -> confirmada (409 com o conflito declarado se o slot foi
+    reconfirmado para um terceiro; auditoria com doctor_id; idempotente).
   invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
-    the prd.md FR consequences before coding.
+    Escreva os testes primeiro. Toda mutação de estado é CAS com verificação de
+    linhas afetadas — sem SELECT ... FOR UPDATE, sem advisory lock bloqueante.
+    Caminhos críticos de concorrência precisam de um teste de contenção
+    deliberada (testcontainers-go). Stack: Go 1.26, Echo v5, PostgreSQL 18,
+    Redis 8. Leia ARCHITECTURE-SPINE.md AD-1..AD-11 e as consequências dos FR do
+    prd.md antes de codar.
 - id: "15"
-  title: Invariant-metrics endpoint and system-job observability
+  title: Endpoint de métricas de invariantes e observabilidade dos jobs do Sistema
   description: >-
-    Implement CAP-24 and CAP-25: an endpoint exposing zero slots with two
-    confirmada appointments, zero duplicate pendente offers per slot, zero
-    duplicate penalties per appointment, and the common-patient waitlist
-    wait-time distribution (all violation counters zero after the contention
-    run); each System job runs on a configurable interval, converges on re-run
-    (no orphan-locked slot, no ownerless pending offer, no partial penalty), and
-    emits items processed / transitions made / duration.
+    Implemente a CAP-24 e a CAP-25: um endpoint que expõe zero slots com duas
+    consultas confirmada, zero offers pendente duplicadas por slot, zero
+    Penalidades duplicadas por consulta, e a distribuição de tempo de espera na
+    Fila de Espera do Paciente comum (todos os contadores de violação em zero
+    após a execução de contenção); cada job do Sistema executa em um intervalo
+    configurável, converge na reexecução (nenhum slot com lock órfão, nenhuma
+    Oferta pendente sem dono, nenhuma Penalidade parcial), e emite itens
+    processados / transições feitas / duração.
   invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
-    the prd.md FR consequences before coding.
+    Escreva os testes primeiro. Toda mutação de estado é CAS com verificação de
+    linhas afetadas — sem SELECT ... FOR UPDATE, sem advisory lock bloqueante.
+    Caminhos críticos de concorrência precisam de um teste de contenção
+    deliberada (testcontainers-go). Stack: Go 1.26, Echo v5, PostgreSQL 18,
+    Redis 8. Leia ARCHITECTURE-SPINE.md AD-1..AD-11 e as consequências dos FR do
+    prd.md antes de codar.
