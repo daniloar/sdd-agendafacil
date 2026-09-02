@@ -1,141 +1,233 @@
 - id: "1"
-  title: Schema and slot state-machine foundation
+  title: Schema, slot and appointment state machines, Clock port
   description: >-
-    Create forward-only migrations for slots, appointments, waitlist_entry,
-    waitlist_offer, idempotency_keys, slot_events, and cancellation_penalty,
-    including the partial unique index on slot_id WHERE status='confirmed', and
-    build the single Slot.transition(to, guard) domain method with its CAS SQL
-    and an injectable Clock port (SPEC.md Constraints; underpins every CAP).
+    Forward-only migrations for doctors, slots, appointments, soft_locks,
+    waitlist_entry, waitlist_vip_counter, offers, idempotency_keys, slot_events,
+    audit_records, cancellation_penalty; the partial unique indexes
+    slot_id WHERE appointment.status='confirmada' and offers(slot_id) WHERE
+    status='pendente'; the Slot.transition and Appointment.transition domain
+    methods with their CAS SQL; an injectable Clock port. Covers SPEC.md
+    Constraints and AD-1/AD-7/AD-10; underpins every capability.
   invoke_dev_with: >-
     Write tests first. Every state mutation is CAS with a rows-affected check —
     no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
     paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-9 before
-    coding.
+    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
+    the prd.md FR consequences before coding.
 - id: "2"
   title: Idempotency envelope and HTTP middleware
   description: >-
-    Implement CAP-10: require an Idempotency-Key (UUID) header on every mutating
-    POST/PUT (400 if absent), insert the key row ON CONFLICT DO NOTHING in the
-    same transaction as the domain mutation, replay the stored response on a
-    matching key+fingerprint, return 409 on fingerprint mismatch, and sweep keys
-    past their 24h TTL.
+    Implement CAP-10: require an Idempotency-Key (UUID) on every mutating route
+    (absent -> 400); insert the key row ON CONFLICT DO NOTHING in the same
+    transaction as the domain mutation; replay same key+fingerprint -> stored
+    response; same key + different body -> 422; concurrent same key -> one
+    executes, the other waits for the original response or gets 409 "em
+    processamento"; 24h fixed TTL with a sweep.
   invoke_dev_with: >-
     Write tests first. Every state mutation is CAS with a rows-affected check —
     no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
     paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-9 before
-    coding.
+    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
+    the prd.md FR consequences before coding.
 - id: "3"
-  title: Discover, soft-lock, and confirm
-  description: >-
-    Implement CAP-1, CAP-2, and CAP-3: read-only agenda listing with lazy-expiry
-    display semantics, the free->held CAS with a Redis EX 900 hold marker, and
-    the held->confirmed CAS guarded by held_by and held_until with the partial
-    unique index as backstop. Includes the deliberate double-booking contention
-    test.
-  invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-9 before
-    coding.
-- id: "4"
-  title: Soft-lock expiry — lazy and proactive
-  description: >-
-    Implement CAP-4: any write-path use case that reads status='held' AND
-    held_until < now() performs the held->free CAS through Slot.transition before
-    proceeding; the System worker does the same proactively off the Redis TTL; a
-    read-only path that cannot open a write transaction treats the slot as free
-    for display only.
-  invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-9 before
-    coding.
-- id: "5"
   title: Transactional outbox, relay, and Redis stream
   description: >-
-    Implement CAP-11: every slot transition writes a past-tense event to
-    slot_events in the mutation's transaction; a relay binary reads the outbox
-    and publishes to a Redis stream; provide the idempotent, reprocess-safe
-    internal consumer scaffold that stories 6, 9, and 10 plug into.
+    Implement CAP-11: every transition writes a past-tense event to slot_events
+    in the mutation's transaction; a relay binary reads the outbox and publishes
+    to a Redis stream; provide the idempotent, reprocess-safe internal consumer
+    scaffold that stories 9, 12, 13 and 14 plug into.
   invoke_dev_with: >-
     Write tests first. Every state mutation is CAS with a rows-affected check —
     no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
     paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-9 before
-    coding.
+    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
+    the prd.md FR consequences before coding.
+- id: "4"
+  title: Immutable audit trail wired into every transition
+  description: >-
+    Implement CAP-23: an append-only audit_record (entity, entity_id,
+    prev_state, new_state, actor in {patient_id|doctor_id|system}, cause, ts UTC)
+    written in the same transaction as every Slot, Appointment, SoftLock, Offer
+    and Penalty transition; never updated or deleted; entity history is
+    reconstructable; state-transition count equals audit-record count.
+  invoke_dev_with: >-
+    Write tests first. Every state mutation is CAS with a rows-affected check —
+    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
+    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
+    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
+    the prd.md FR consequences before coding.
+- id: "5"
+  title: Schedule publication — register doctor, publish slots, block/unblock
+  description: >-
+    Implement CAP-13, CAP-14, CAP-15: register a Doctor (name, specialty,
+    default Valor de Referencia; missing -> 422; idempotent); publish N slots in
+    one request (all livre, inheriting the Doctor's Valor de Referencia;
+    overlapping intervals -> 422 rejecting the whole batch; end <= start -> 422;
+    idempotent); block/unblock a livre slot (non-livre -> 409; a bloqueado slot
+    is absent from discovery and cannot receive a soft lock).
+  invoke_dev_with: >-
+    Write tests first. Every state mutation is CAS with a rows-affected check —
+    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
+    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
+    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
+    the prd.md FR consequences before coding.
 - id: "6"
+  title: Discover agenda
+  description: >-
+    Implement CAP-1: list a doctor's slots for a date range with each slot's
+    availability; only livre shows available; support only=available; return UTC
+    times with the clinic offset as presentation metadata; a slot whose soft
+    lock has expired shows available again with no patient action. Read-only,
+    no write transaction.
+  invoke_dev_with: >-
+    Write tests first. Every state mutation is CAS with a rows-affected check —
+    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
+    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
+    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
+    the prd.md FR consequences before coding.
+- id: "7"
+  title: Soft-lock and confirm
+  description: >-
+    Implement CAP-2 and CAP-3: free->held CAS (exactly one winner under K up to
+    50; non-livre -> 409; at most 1 active soft lock per patient per doctor+date
+    -> 409) with a Redis EX 900 marker; held->confirmed CAS guarded by held_by
+    and held_until, with the partial unique index as backstop; a different-key
+    repeat when the appointment already exists returns it, not an error.
+    Includes the deliberate double-booking contention test.
+  invoke_dev_with: >-
+    Write tests first. Every state mutation is CAS with a rows-affected check —
+    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
+    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
+    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
+    the prd.md FR consequences before coding.
+- id: "8"
+  title: Soft-lock expiry — lazy and proactive
+  description: >-
+    Implement CAP-4: any write-path use case that reads status='reservado' AND
+    held_until < now() performs the reservado->livre CAS through the transition
+    method (outbox event + audit record in the same transaction) before
+    proceeding; the System worker does the same proactively off the Redis TTL;
+    a read-only path that cannot open a write transaction treats the slot as
+    free for display only; delay to effective release <= 30 s.
+  invoke_dev_with: >-
+    Write tests first. Every state mutation is CAS with a rows-affected check —
+    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
+    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
+    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
+    the prd.md FR consequences before coding.
+- id: "9"
   title: Cancel with penalty and slot reopen
   description: >-
-    Implement CAP-5: the confirmed->cancelled CAS succeeds once; when
-    start - now() < 2h a cancellation_penalty row with amount = 50% of the slot's
-    consultation_price and its currency is written in the same transaction; the
-    slot then transitions cancelled->free and emits slot.cancelled. No charge or
-    collection.
+    Implement CAP-5: confirmado->cancelado CAS once; when start - now() < 2h a
+    cancellation_penalty row with amount = 50% of the slot's Valor de Referencia
+    (fixed at slot creation) and its currency is written in the same
+    transaction; the slot then goes livre and emits slot.cancelled; >= 2h ahead
+    writes no penalty; cancelling a concluida/no_show appointment -> 409; at most
+    one penalty per appointment under concurrent/repeated cancels. No collection.
   invoke_dev_with: >-
     Write tests first. Every state mutation is CAS with a rows-affected check —
     no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
     paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-9 before
-    coding.
-- id: "7"
-  title: Waitlist join, authority, projection, and reconciler
-  description: >-
-    Implement CAP-6 and CAP-12: write the waitlist_entry row (Postgres
-    authority) in the use-case transaction with doctor_id, UTC calendar date,
-    enqueued_at, and is_vip, do a best-effort ZADD to
-    waitlist:<doctor_id>:<yyyy-mm-dd>, and add the reconciler that reprojects the
-    sorted set from the table on boot and periodically, with a SELECT ORDER BY
-    score fallback on miss.
-  invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-9 before
-    coding.
-- id: "8"
-  title: Waitlist score and VIP anti-starvation
-  description: >-
-    Implement CAP-8: the pure domain score
-    enqueued_at_ms - VIP_BOOST - age_promotion(waited), with VIP_BOOST (default
-    24h) and AGE_PROMOTION_CEILING (default 48h) as 12-factor env vars, re-score
-    as an idempotent ZADD, and a single queue with no separate VIP set. Test that
-    a common entry past the ceiling outranks a freshly enqueued VIP.
-  invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-9 before
-    coding.
-- id: "9"
-  title: Waitlist advance and 30-minute offer
-  description: >-
-    Implement CAP-7: on a doctor-day slot being freed (cancel, expiry, or
-    reopen event) select the next entry by ascending score, set
-    offer:<doctor_id>:<yyyy-mm-dd> with EX 1800 and write a waitlist_offer row,
-    put the concrete slot_id in the offer payload, start the 30-minute clock at
-    notification sent, advance to the next entry on expiry, and route acceptance
-    through the confirm path.
-  invoke_dev_with: >-
-    Write tests first. Every state mutation is CAS with a rows-affected check —
-    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
-    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-9 before
-    coding.
+    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
+    the prd.md FR consequences before coding.
 - id: "10"
-  title: D-1 reminder with two-stage risk and release
+  title: Waitlist join (two scopes), authority/projection, reconciler, leave
   description: >-
-    Implement CAP-9: the System worker sends the reminder about 24h before start
-    with the deterministic key reminder:<appointment_id>:D-1; non-confirmation by
-    the D-1 cutoff sets appointment.risk = high with the slot still confirmed;
-    still-unconfirmed at the T-2h cutoff releases the slot toward free (driving
-    story 9's advance) with no patient penalty.
+    Implement CAP-6, CAP-12 and CAP-17: write waitlist_entry (Postgres
+    authority) with scope slot:<id> or doctor:<id>:<yyyy-mm-dd>, enqueued_at and
+    class, mirrored best-effort to the matching Redis sorted set; a patient
+    appears at most once per queue; joining a slot's waitlist where the patient
+    already has a confirmada appointment -> 409; leave is idempotent and marks a
+    pendente offer recusada then triggers advance; a reconciler reprojects both
+    sorted sets and the waitlist_vip_counter from Postgres on boot and
+    periodically, with a domain-function fallback on miss.
   invoke_dev_with: >-
     Write tests first. Every state mutation is CAS with a rows-affected check —
     no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
     paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
-    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-9 before
-    coding.
+    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
+    the prd.md FR consequences before coding.
+- id: "11"
+  title: Queue ordering with quota and ceiling anti-starvation
+  description: >-
+    Implement CAP-8: a pure, deterministic domain function — class (VIP before
+    comum) then entry order; quota = a consecutive-VIP-grant counter per
+    doctor+date, ANTI_STARVATION_QUOTA default 3, resetting on any grant to a
+    comum; ceiling = ANTI_STARVATION_CEILING default 24h, a comum past it gets
+    top priority. Test that a comum past the ceiling outranks a freshly
+    enqueued VIP and that a comum is served within N+1 releases worst case.
+  invoke_dev_with: >-
+    Write tests first. Every state mutation is CAS with a rows-affected check —
+    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
+    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
+    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
+    the prd.md FR consequences before coding.
+- id: "12"
+  title: Waitlist advance, 30-minute offer, and accept
+  description: >-
+    Implement CAP-7 and CAP-16: on a slot becoming livre (cancel, expiry,
+    no-show) select the next entry by the story-11 ordering over the merged
+    slot-scope + doctor+date-scope candidates; set offer:<slot_id> EX 1800 and
+    insert an offers row via INSERT ON CONFLICT DO NOTHING on the pendente
+    partial unique index so at most one pending offer per slot exists and
+    concurrent release+advance converge; payload names the slot_id; 30-minute
+    clock from notification sent; on expiry/refusal advance or leave livre; a
+    served patient leaves all queues for that doctor+date; accepting a pendente
+    offer in-window -> confirmada appointment (idempotent; expired/refused/other
+    patient -> 409; same uniqueness invariant as story 7).
+  invoke_dev_with: >-
+    Write tests first. Every state mutation is CAS with a rows-affected check —
+    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
+    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
+    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
+    the prd.md FR consequences before coding.
+- id: "13"
+  title: D-1 reminder, presence confirmation, em_risco marking
+  description: >-
+    Implement CAP-9, CAP-18, CAP-19 plus the NotificationGateway port with a
+    reference log adapter: the System sends one D-1 reminder per confirmada
+    appointment whose slot starts the next day (deterministic key
+    reminder:<appointment_id>:D-1; ~18:00 clinic timezone -> UTC; no resend; none
+    for cancelada/concluida/no_show); register presence confirmation
+    (idempotent; after slot start -> 409); at T-2h with no presence confirmation
+    the System sets the slot em_risco (appointment stays confirmada; presence or
+    Check-in returns it to confirmado; idempotent; no pre-oferta in MVP).
+  invoke_dev_with: >-
+    Write tests first. Every state mutation is CAS with a rows-affected check —
+    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
+    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
+    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
+    the prd.md FR consequences before coding.
+- id: "14"
+  title: No-show lifecycle — auto no-show, check-in, doctor override
+  description: >-
+    Implement CAP-20, CAP-21, CAP-22: the System auto-marks no_show any
+    confirmada appointment whose slot started more than 15 min ago with no
+    Check-in (idempotent; a confirmed no-show frees the slot and triggers
+    story-12 advance; audit record with cause); register Check-in from 30 min
+    before to 15 min after slot start (blocks auto no-show; idempotent; outside
+    the window -> 409); the owning Doctor undoes a no-show -> confirmada (409
+    with the conflict stated if the slot was re-confirmed for a third party;
+    audit with doctor_id; idempotent).
+  invoke_dev_with: >-
+    Write tests first. Every state mutation is CAS with a rows-affected check —
+    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
+    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
+    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
+    the prd.md FR consequences before coding.
+- id: "15"
+  title: Invariant-metrics endpoint and system-job observability
+  description: >-
+    Implement CAP-24 and CAP-25: an endpoint exposing zero slots with two
+    confirmada appointments, zero duplicate pendente offers per slot, zero
+    duplicate penalties per appointment, and the common-patient waitlist
+    wait-time distribution (all violation counters zero after the contention
+    run); each System job runs on a configurable interval, converges on re-run
+    (no orphan-locked slot, no ownerless pending offer, no partial penalty), and
+    emits items processed / transitions made / duration.
+  invoke_dev_with: >-
+    Write tests first. Every state mutation is CAS with a rows-affected check —
+    no SELECT ... FOR UPDATE, no blocking advisory lock. Concurrency-critical
+    paths need a deliberate-contention test (testcontainers-go). Stack: Go 1.26,
+    Echo v5, PostgreSQL 18, Redis 8. Read ARCHITECTURE-SPINE.md AD-1..AD-11 and
+    the prd.md FR consequences before coding.
