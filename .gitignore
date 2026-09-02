@@ -1,0 +1,13 @@
+# Binários de build
+/api
+/worker
+/cmd/api/api
+/cmd/worker/worker
+
+# Artefatos de teste e cobertura
+*.out
+*.test
+coverage.*
+
+# Ambiente local
+.env

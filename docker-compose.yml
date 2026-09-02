@@ -1,0 +1,43 @@
+# Dependências para dev local. Também um fallback quando testcontainers não está
+# disponível:
+#   docker compose up -d postgres
+#   DATABASE_URL=postgres://agendafacil:agendafacil@localhost:5432/agendafacil?sslmode=disable go test ./internal/adapter/postgres/...
+#
+# O Redis está aqui para histórias futuras (AD-3); nenhum código Go o toca na
+# História 1.
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: agendafacil
+      POSTGRES_PASSWORD: agendafacil
+      POSTGRES_DB: agendafacil
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agendafacil -d agendafacil"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    volumes:
+      # As imagens postgres:18 guardam os dados sob um subdiretório versionado e
+      # exigem o mount em /var/lib/postgresql (não /var/lib/postgresql/data).
+      - postgres_data:/var/lib/postgresql
+
+  redis:
+    image: redis:8
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:
