@@ -13,9 +13,15 @@ O spine fixa as invariantes de forma terse; aqui fica o **porquê** — contexto
 alternativas pesadas, trade-offs aceitos e o que mudaria a decisão. Nenhuma regra
 nova nasce aqui; se algo abaixo contradiz o spine, o spine vence.
 
-Entrada: `brief.md` + `addendum.md`. Sem PRD — NFRs não formalizados; assume-se
-"clínica ou rede pequena". Stack verificada na web em set/2026: Go 1.26, Echo v5,
-PostgreSQL 18, Redis 8.
+Entrada: `brief.md` + `addendum.md` + `prd.md` (final, 2026-09-01). Stack
+verificada na web em set/2026: Go 1.26, Echo v5, PostgreSQL 18, Redis 8.
+
+> **Atualização com o PRD.** A primeira versão deste documento foi escrita sem o
+> PRD. A seção **6. Reconciliação com o PRD** (ao final) cobre o que mudou:
+> reversão do modelo de anti-starvation (AD-4), as duas novas decisões (AD-10
+> máquina de estados da consulta, AD-11 trilha de auditoria), a fila de espera
+> em dois escopos, e os NFRs agora formalizados. As seções 0–4 abaixo
+> permanecem válidas como escritas; onde o PRD as ajusta, a seção 6 diz como.
 
 ---
 
@@ -278,28 +284,113 @@ graph TD
   AD2 --> AD7["AD-7 Máquina de estados escritor único"]
   AD7 --> AD8["AD-8 Outbox evento na transação"]
   AD8 --> AD3["AD-3 Fila no Redis Sorted Set"]
-  AD3 --> AD4["AD-4 Score composto anti-starvation"]
+  AD3 --> AD4["AD-4 Ordenação: classe + quota + teto"]
   AD1 --> AD9["AD-9 Fila: Postgres autoridade, Redis projeção"]
   AD3 --> AD9
   AD6["AD-6 UTC + porta Clock"] --> AD2
   AD6 --> AD3
+  AD7 --> AD10["AD-10 Consulta: máquina de estados própria"]
+  AD8 --> AD11["AD-11 Trilha de auditoria imutável"]
 ```
 
 O fio condutor: **Postgres guarda a verdade e serializa as corridas via CAS;
-Redis acelera; toda transição vira evento na mesma transação; consumidores são
-idempotentes.** As quatro decisões que você pediu são a mesma ideia aplicada a
-quatro pontos.
+Redis acelera; toda transição vira evento e registro de auditoria na mesma
+transação; consumidores são idempotentes.**
 
 ---
 
-## Pendências que a `bmad-spec` precisa fechar
+## 6. Reconciliação com o PRD
 
-| # | Pendência | Impacto se não resolver |
-| --- | --- | --- |
-| **B1 (blocker)** | Escopo da fila: `waitlist:<scope>` por `slot_id` ou por `doctor_id + data`? | AD-3, AD-4, AD-9 não têm chave definida; a implementação da fila trava. |
-| D1 | Janela de 30 min conta da notificação *enviada* ou *entregue*? | Ambiguidade no avanço da fila; assumido "enviada". |
-| D2 | Não-confirmação do lembrete D-1: libera o slot ou só marca risco? | Comportamento do worker de lembrete indefinido. |
-| D3 | Base de cálculo da penalidade de 50% (valor da consulta vem de onde, se pagamento está fora de escopo?). | `cancellation_penalty` sem valor a registrar. |
-| D4 | Parâmetros anti-starvation: `vip_boost` (assumido 24h), teto (assumido 48h). | Comportamento da fila calibrável mas não calibrado. |
-| D5 | TTL da chave de idempotência (assumido 24h); horário de disparo do D-1. | Assumções razoáveis; confirmar. |
-| D6 | NFRs: carga esperada, alvo de latência, RTO/RPO, volume de slots. | Sem PRD; dimensionamento de Postgres/Redis e estratégia de deploy ficam no escuro. |
+O PRD (final, 2026-09-01) chegou depois da primeira versão do spine. Ele não
+contradiz o núcleo (AD-1, AD-2, AD-5, AD-6, AD-8 seguem como escritos), mas:
+amplia o escopo do MVP, **reverte** o modelo de anti-starvation e formaliza os
+NFRs. Registro do que mudou e por quê.
+
+### 6.1 AD-4 revertido — de score composto para quota + teto
+
+**O que a v1 do spine fez.** Modelava a fila como uma função pura
+`score = enqueued_at_ms − vip_boost − age_promotion(waited)` num único Sorted
+Set, e **rejeitava explicitamente** um mecanismo de quota "N VIPs : 1 comum" por
+exigir um contador com estado.
+
+**O que o PRD pede (§3, §4.7, FR-16..FR-18).** Dois mecanismos combinados:
+(A) **quota** — após `N=3` ofertas consecutivas a VIPs numa fila, o próximo
+comum elegível é promovido; (B) **teto** — um comum esperando há mais que 24h
+ganha prioridade máxima. Ambos configuráveis. A ordenação-base é classe (VIP
+antes de comum) e, dentro da classe, ordem de entrada.
+
+**Decisão.** Seguir o PRD (escolha do usuário na re-execução). O score composto
+sai. A ordenação passa a ser uma função de domínio avaliada na criação de cada
+oferta, sobre as linhas `waitlist_entry` mais o contador de quota. O contador
+**tem estado** — é o custo que o PRD aceita para tornar a garantia "a cada N+1
+liberações um comum é servido" diretamente verificável (SM-4), em vez de emergir
+de uma constante `vip_boost` calibrada.
+
+**Trade-off aceito.** Um contador persistido a mais (`waitlist_vip_counter`,
+uma linha por médico+data) e a reconciliação dele junto com o Sorted Set
+(AD-9). Em troca: o comportamento anti-starvation é legível e testável ponto a
+ponto, não uma propriedade emergente de aritmética de score.
+
+**O que mudaria.** Se o volume mostrar que a quota N=3 é agressiva demais (VIP
+perde vantagem prática — contra-métrica SM-C3), os dois parâmetros são env
+vars; nada estrutural muda.
+
+### 6.2 Fila de espera em dois escopos
+
+O PRD tem fila por Slot (FR-10..FR-14, no MVP) e fila por Médico+data (FR-15,
+marcada opcional/v2). O usuário optou por **ambas no MVP**. AD-3 passa a ter
+dois Sorted Sets (`waitlist:slot:<id>` e `waitlist:doctor:<id>:<data>`); ao
+liberar um slot, a seleção do próximo elegível **funde** os candidatos das duas
+filas daquela data e ordena pela função do AD-4 sobre o conjunto unido. Um
+paciente servido sai de todas as filas do médico+data. O contador de quota é
+keyed por médico+data — o escopo da união — para não divergir entre as duas
+filas (endurecimento do reviewer gate).
+
+### 6.3 AD-10 novo — consulta como máquina de estados própria
+
+O PRD separa claramente o estado do **Slot** (`livre | reservado | confirmado |
+em_risco | bloqueado`) do estado da **Consulta** (`confirmada | cancelada |
+concluida | no_show`), com no-show, check-in e sobreposição do médico agindo
+sobre a consulta. A v1 do spine só tinha a máquina do slot. AD-10 fixa que a
+consulta transiciona por um único método de domínio, **na mesma transação** que
+a transição pareada do slot e o evento de outbox, e que jobs (no-show) e
+handlers (check-in) chamam o caso de uso — nunca escrevem `appointments.status`
+direto. Sem isso, dois builders poderiam deixar slot e consulta divergirem
+(slot `livre`, consulta ainda `confirmada`).
+
+### 6.4 AD-11 novo — trilha de auditoria como capacidade de MVP
+
+A v1 tinha "observabilidade detalhada" em *Deferred*. O PRD §4.11 (FR-27, FR-28)
+a traz para dentro do MVP: **valor do produto é ser correto e auditável sob
+carga**. AD-11 fixa um `audit_record` append-only por transição de qualquer
+entidade (slot, consulta, soft lock, oferta, penalidade), escrito na mesma
+transação da mutação, nunca atualizado nem apagado, servindo tanto a
+reconstrução de história (`GET /audit`) quanto o endpoint de verificação de
+invariantes (`GET /metrics/invariants`). Relação com o outbox (AD-8): o outbox
+move consumidores assíncronos; a auditoria é a história durável — podem
+compartilhar uma tabela de transições, decisão de implementação.
+
+### 6.5 NFRs agora formalizados
+
+| Antes (v1) | Agora (PRD) |
+| --- | --- |
+| "clínica ou rede pequena", sem números | Escala-alvo do teste: ~50 médicos, ~1000 slots/dia, 200 pacientes concorrentes, até 50 req. simultâneas/slot (§9) |
+| Sem alvo de latência | SM-5: p95 do atraso gatilho→transição ≤ 30s; `SYSTEM_JOB_INTERVAL` dimensionado a partir disso |
+| RTO/RPO em aberto | Sem RTO/RPO, sem SLA de produção, sem alvo de custo — implementação de referência (§12) |
+| Deploy em aberto | Docker Compose (dev) + Postgres/Redis gerenciados; K8s/autoscaling seguem *Deferred* |
+
+### 6.6 Pendências que sobraram para a `bmad-spec`
+
+O PRD fechou B1 (escopo da fila → ambos), D1 (janela conta da notificação
+enviada), D2 (D-1: marca *em risco* a T-2h, oferta real só após no-show
+confirmado — pré-oferta condicional fica para v2), D3 (penalidade = 50% do
+Valor de Referência fixado na criação do slot), D4 (`N=3` / teto `24h`), D5
+(TTL 24h fixo; D-1 às 18:00 fuso da clínica). Restam:
+
+| # | Pendência (PRD §8) |
+| --- | --- |
+| 1 | Corrida de idempotência concorrente (FR-25): 2ª requisição com mesma key bloqueia até a resposta ou retorna `409 "em processamento"`? |
+| 2 | O claim de auth carrega a classe VIP do paciente, ou ela é consultada internamente? (afeta AD-4 / FR-16) |
+| 3 | `N=3` / teto `24h` adequados ao volume esperado? Variam por especialidade? |
+| 4 | Disparo do Lembrete D-1 (18:00 fuso da clínica): configurável por clínica? Slots em múltiplos fusos? |
+| 5 | Desfazer No-show após reconfirmação por terceiro (FR-24): `409` é final ou há fluxo de resolução? |
